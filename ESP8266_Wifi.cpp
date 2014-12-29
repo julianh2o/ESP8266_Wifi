@@ -8,6 +8,8 @@ ESP8266_Wifi::ESP8266_Wifi() {
 
 void ESP8266_Wifi::init() {
   ESP_SERIAL.begin(115200);
+  //add Serial.setTimeout here?  Make baud configurable?  
+  //I noticed that some people are running their ESP at 9600 on a software UART.
 }
 
 //TODO remove me?
@@ -113,6 +115,7 @@ void ESP8266_Wifi::setMode(int mode) {
   ESP8266_Wifi::send(cmd);
   ESP8266_Wifi::waitFor("OK");
   ESP_SERIAL.flush();
+  //here we wait for an OK but we don't return anything.  add a boolean return?
 }
 
 boolean ESP8266_Wifi::connect(String ssid, String password) {
@@ -135,10 +138,12 @@ boolean ESP8266_Wifi::sendPayload(String get) {
   ESP8266_Wifi::send(cmd);
   ESP8266_Wifi::waitFor(">");
   ESP8266_Wifi::send(get);
+  //add a check to see if this worked?
 }
 
 boolean ESP8266_Wifi::close() {
   ESP8266_Wifi::send("AT+CIPCLOSE");
   ESP8266_Wifi::waitFor("Unlink");
+  //add a boolean return here?
 }
 
