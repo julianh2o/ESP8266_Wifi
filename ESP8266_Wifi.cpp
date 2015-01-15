@@ -2,7 +2,7 @@
 
 ESP8266_Wifi::ESP8266_Wifi() {
     this->out = NULL;
-    this->timeout = 5000;
+    this->timeout = 10000;
     lineBuffer = "";
 }
 
@@ -26,7 +26,7 @@ void ESP8266_Wifi::flush() {
 }
 
 void ESP8266_Wifi::send(String data) {
-  DEBUG_SERIAL.println("(ESP8266 Debug) SENDING: "+data);
+  DEBUGLN("(ESP8266 Debug) SENDING: "+data);
   ESP_SERIAL.print(data);
   ESP_SERIAL.print("\r\n");
 }
@@ -34,33 +34,48 @@ void ESP8266_Wifi::send(String data) {
 boolean ESP8266_Wifi::stringContains(String needle, String haystack) {
     for (int i=0; i<needle.length()-haystack.length(); i++) {
         String fragment = haystack.substring(i,i+needle.length());
-        DEBUG_SERIAL.print("check frag: ");
-        DEBUG_SERIAL.println(fragment);
+        DEBUG("check frag: ");
+        DEBUGLN(fragment);
         if (fragment == needle) return true;
     }
     return false;
 }
 
-boolean ESP8266_Wifi::waitFor(char * waitFor) {
-  String dest = "";
-  return ESP8266_Wifi::waitForReturn(waitFor,dest);
-}
-
 void ESP8266_Wifi::handleCharacter(char c) {
   lineBuffer += c;
   if (c == '\n') {
-    DEBUG_SERIAL.print("(ESP8266 Output) ");
-    DEBUG_SERIAL.print(lineBuffer);
-    lineBuffer = "";
+    ESP8266_Wifi::flushESPBuffer();
   }
 }
 
-boolean ESP8266_Wifi::waitForReturn(char * waitFor, String &returnValue) {
+void ESP8266_Wifi::flushESPBuffer() {
+    DEBUG("(ESP8266 Output) ");
+    DEBUG(lineBuffer);
+    if (lineBuffer.charAt(lineBuffer.length()-1) != '\n') {
+        DEBUGLN("[no nl]");
+    }
+    lineBuffer = "";
+}
+
+boolean ESP8266_Wifi::waitFor(char * waitFor) {
+  String s = "";
+  return ESP8266_Wifi::waitFor(waitFor,s,timeout,false);
+}
+
+boolean ESP8266_Wifi::waitFor(char * waitFor, String &returnValue) {
+  return ESP8266_Wifi::waitFor(waitFor,returnValue,this->timeout, false);
+}
+
+boolean ESP8266_Wifi::waitFor(char * waitFor, String &returnValue, long timeout, boolean terminateImmediately) {
   long start = millis();
   String buffer = "";
   char c;
-  DEBUG_SERIAL.print("waiting for: ");
-  DEBUG_SERIAL.println(waitFor);
+  DEBUG("waiting for: ");
+  DEBUG(waitFor);
+  DEBUG(" (");
+  DEBUG(timeout);
+  DEBUG(")");
+  DEBUGLN();
   boolean found = false;
   while(millis() - start < this->timeout) {
     if (ESP_SERIAL.available()) {
@@ -68,21 +83,36 @@ boolean ESP8266_Wifi::waitForReturn(char * waitFor, String &returnValue) {
       returnValue = lineBuffer;
       ESP8266_Wifi::handleCharacter(c);
       buffer += c;
-      //DEBUG_SERIAL.print("char: ");
-      //DEBUG_SERIAL.println(c);
       if (c == '\n' && found) {
-          DEBUG_SERIAL.print("FOUND: ");
-          DEBUG_SERIAL.println(waitFor);
+          DEBUG("FOUND: ");
+          DEBUG(waitFor);
+          DEBUG(" (");
+          DEBUG(millis()-start);
+          DEBUG(")");
+          DEBUGLN();
           return true;
       }
 
 
       if (buffer.endsWith(waitFor)) {
+          if (terminateImmediately) return true;
+
           found = true;
+          //if we've found our sentinel.. but we dont have any available data.. we should stop looking
+          if (!ESP_SERIAL.available()) {
+              ESP8266_Wifi::flushESPBuffer();
+              DEBUG("FOUND: ");
+              DEBUG(waitFor);
+              DEBUG(" (");
+              DEBUG(millis()-start);
+              DEBUG(")");
+              DEBUGLN();
+              return true;
+          }
       }
     }
   }
-  DEBUG_SERIAL.println("ERROR: WaitFor timeout out.");
+  ERRORLN("ERROR: WaitFor timeout out.");
   return found;
 }
 
@@ -96,7 +126,7 @@ boolean ESP8266_Wifi::reset() {
 int ESP8266_Wifi::getMode() {
   ESP8266_Wifi::send("AT+CWMODE?");
   String line = "";
-  if (ESP8266_Wifi::waitForReturn("+CWMODE:",line)) {
+  if (ESP8266_Wifi::waitFor("+CWMODE:",line)) {
     int mode = line.substring(line.indexOf('+')+8).toInt();
     ESP8266_Wifi::flush();
     return mode;
@@ -125,6 +155,78 @@ boolean ESP8266_Wifi::connect(String ssid, String password) {
   return success;
 }
 
+boolean ESP8266_Wifi::get(String url, String &result) {
+    return ESP8266_Wifi::get(url, result, false);
+}
+
+boolean ESP8266_Wifi::get(String url, String &result, boolean fullResponse) {
+  String protocol = "";
+  String host = "";
+  String path = "";
+  String params = "";
+  if (!ESP8266_Wifi::parseUrl(url,protocol,host,path,params)) return false;
+  if (!ESP8266_Wifi::start("TCP",host,80)) return false;
+  String request = "";
+  request += "GET "+path+(params.length() > 0 ? "?"+params : "")+" HTTP/1.1"+"\r\n";
+  request += "Host: "+host+"\r\n";
+  request += "\r\n";
+  if (!ESP8266_Wifi::sendPayload(request)) return false;
+  String s = "";
+  if (ESP8266_Wifi::waitFor("+IPD,",s,5000,true)) {
+    ESP8266_Wifi::flushESPBuffer();
+    String buffer = "";
+    while(ESP_SERIAL.available()) {
+        char c = ESP_SERIAL.read();
+        if (c == ':') {
+            break;
+        }
+        buffer += c;
+    }
+    int responseLength = buffer.toInt();
+    buffer = "";
+    while(responseLength-- > 0) {
+        while(!ESP_SERIAL.available());
+        buffer += (char)ESP_SERIAL.read();
+    }
+    if (fullResponse) {
+        result = buffer;
+    } else {
+        int contentBreak = buffer.indexOf("\r\n\r\n");
+        if (contentBreak == -1) return false;
+        result = buffer.substring(contentBreak+4);
+    }
+  }
+  if (!ESP8266_Wifi::waitFor("OK")) return false;
+  if (!ESP8266_Wifi::close()) return false;
+  return true;
+}
+
+boolean ESP8266_Wifi::parseUrl(String url,String &protocol,String &host,String &path,String &params) {
+    if (!url.startsWith("http")) return false;
+    protocol = "http";
+    if (url.startsWith("https")) protocol = "https";
+
+    int start = 0;
+    start = url.indexOf("/"); //start of hostname
+    if (start == -1) return false;
+    start += 2;
+    int end = url.indexOf("/",start+1);
+    if (end == -1) end = url.length();
+    host = url.substring(start,end);
+
+    start = end;
+    if (start > url.length()) return true;
+    end = url.indexOf("?",start);
+    if (end == -1) end = url.length();
+    path = url.substring(start,end);
+
+    start = end + 1;
+    if (start > url.length()) return true;
+    params = url.substring(start);
+
+    return true;
+}
+
 boolean ESP8266_Wifi::start(String protocol, String ip, int port) {
   ESP8266_Wifi::send("AT+CIPSTART=\""+protocol+"\",\""+ip+"\","+port);
   boolean success = ESP8266_Wifi::waitFor("Linked");
@@ -136,9 +238,10 @@ boolean ESP8266_Wifi::sendPayload(String get) {
   String cmd = "AT+CIPSEND=";
   cmd += (get.length() + 2);
   ESP8266_Wifi::send(cmd);
-  ESP8266_Wifi::waitFor(">");
+  boolean success = ESP8266_Wifi::waitFor("> ");
+  if (!success) return false;
   ESP8266_Wifi::send(get);
-  //add a check to see if this worked?
+  return ESP8266_Wifi::waitFor("SEND OK");
 }
 
 boolean ESP8266_Wifi::close() {

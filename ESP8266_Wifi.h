@@ -4,8 +4,27 @@
 #include "Arduino.h"
 #include "SoftwareSerial.h"
 
+//#define DEBUG
+#define ERROR
+
 #define DEBUG_SERIAL Serial
 #define ESP_SERIAL Serial1
+
+#ifdef DEBUG
+    #define DEBUG(x) Serial.print(x)
+    #define DEBUGLN(x) Serial.println(x)
+#else
+    #define DEBUG(x)
+    #define DEBUGLN(x)
+#endif
+
+#ifdef ERROR
+    #define ERROR(x) Serial.print(x)
+    #define ERRORLN(x) Serial.println(x)
+#else
+    #define ERROR(x)
+    #define ERRORLN(x)
+#endif
 
 class ESP8266_Wifi {
 public:
@@ -16,15 +35,13 @@ public:
     ESP8266_Wifi();
     void init();
     boolean connect(String ssid, String password);
-    boolean get(String ip, String getString, String &result);
+    boolean get(String url, String &result);
+    boolean get(String url, String &result, boolean fullResponse);
 
     void debugSerial(SoftwareSerial * serial);
     boolean reset();
     int getMode();
     void setMode(int mode);
-    boolean start(String protocol, String ip, int port);
-    boolean sendPayload(String get);
-    boolean close();
 
 private:
     SoftwareSerial * out;
@@ -33,10 +50,16 @@ private:
 
     void send(String data);
     void flush();
-    boolean waitFor(char * data);
-    boolean waitForReturn(char * waitFor, String &returnValue);
+    boolean waitFor(char * waitFor);
+    boolean waitFor(char * waitFor, String &returnValue);
+    boolean waitFor(char * waitFor, String &returnValue, long timeout, boolean terminateImmediately);
     void handleCharacter(char c);
+    void flushESPBuffer();
     boolean stringContains(String needle, String haystack);
+    boolean parseUrl(String url,String &protocol,String &host,String &path,String &params);
+    boolean start(String protocol, String ip, int port);
+    boolean sendPayload(String get);
+    boolean close();
 };
 
 #endif
